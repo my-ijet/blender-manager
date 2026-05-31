@@ -1,0 +1,361 @@
+#!/usr/bin/env ysh
+# vim: set filetype=ysh :
+
+proc print-usage {
+  write -n """
+  Commands:
+    update
+        Find the latest version in the repo (https://download.blender.org/release/)
+        then download and unpack it to <path>
+        then remove the current version
+        then set current to the downloaded version
+    get latest|<version>
+    current latest|<version>
+        Set current to the specified version
+    rm <version>
+        Remove the specified version
+        if the current version is removed, set current to the latest version
+    purge
+        Remove <path> and all of its contents
+    ls, list [repo]
+        List downloaded versions
+        for the "repo" subcommand: list versions found in the Blender repository
+  Flags:
+    -p, --path [/opt/blender-manager/]
+        Path to downloaded Blender versions
+    -i, --install [false]
+        Install a desktop file pointed to <path>/current/blender
+        so frequent installation is not required
+  <version> = MAJOR.MINOR[.PATCH]
+  """
+}
+
+#var is_arm = $(uname -m) ~ / ('arm' | 'aarch') /
+var blender_repo = 'https://download.blender.org/release'
+var path = '/opt/blender-manager'
+var command = ''
+var version = ''
+var cur_ver = ''
+var needs_install = false
+
+proc Exit(str=''; ; p=true, e=1) {
+  if (str !== '') {
+    echo $str
+    if (p) { echo }
+  }
+  if (p) { print-usage }
+  exit $e
+}
+
+func next(a, i, str) {
+  try { var v = a[i+1]  }
+  if failed { Exit $str }
+  return (v)
+}
+
+proc parse-flags (; argv) {
+  for i, a in (argv) {
+    case (a) {
+      update {
+        if (command !== '') { Exit }
+        setglobal command = 'update'
+      }
+      get {
+        if (command !== '') { Exit }
+        setglobal command = 'get'
+        setglobal version = next(argv, i, 'Provide a blender version')
+      }
+      current {
+        if (command !== '') { Exit }
+        setglobal command = 'current'
+        setglobal version = next(argv, i, 'Provide a blender version')
+      }
+      rm {
+        if (command !== '') { Exit }
+        setglobal command = 'rm'
+        setglobal version = next(argv, i, 'Provide a blender version')
+      }
+      purge {
+        if (command !== '') { Exit }
+        setglobal command = 'purge'
+      }
+      ls | list {
+        if (command !== '') { Exit }
+        setglobal command = 'list'
+      }
+      repo {
+        if (command !== 'list') { Exit }
+        setglobal command = 'list_repo'
+      }
+      help | -h | --help { 
+        if (command !== '') { Exit }
+        setglobal command = 'help'
+      }
+      -p | --path {
+        setglobal path = next(argv, i, 'Provide a path')
+      }
+      -i | --install {
+        setglobal needs_install = true
+      }
+    }
+  }
+  if (command === '') { Exit 'Provide a meaningful command' }
+}
+
+proc ensure_path() {
+  if test -d $path { return }
+  echo "Path \"$path\" does not exist"
+  write -n "create?(y/N) "
+  try { read -r answer }
+  if failed { Exit (p=false) }
+  case (answer) {
+    Y | y { true }
+    *     { Exit (p=false) }
+  }
+
+  echo mkdir -p $path
+  try { mkdir -p $path }
+  if failed { 
+    echo 'Failed to create folder, trying with sudo'
+    echo sudo mkdir -p $path
+    try { sudo mkdir -p $path }
+    if failed { Exit "Failed to create $path" (p=false) }
+    var usr = $[ENV.USER]
+    sudo chown $usr:$usr $path
+  }
+}
+
+proc check_provided_version() {
+  var correct = false
+  case (version) {
+    / d+ '.' d+ / { setvar correct = true }
+    '' | latest { setvar correct = true }
+  }
+  if (not correct) { Exit 'Provide a meaningful version' }
+}
+
+proc get_current_version() {
+  if not test -d "$path/current" { return }
+  var c = $(readlink "$path/current")
+  setglobal cur_ver = $(echo $c | sed -E 's/blender-([0-9]+\.[0-9]+\.[0-9]+)-linux.*/\1/')
+}
+
+func filter_path_by_version() {
+  var found = :||
+  for p in $path/* {
+    if (not p.contains(version)) { continue }
+      call found->append(p)
+    }
+  return (found)
+}
+
+func find_latest_in_path() {
+  var latest_path = ''
+  var major = 0
+  var minor = 0
+  var patch = 0
+  for p in $path/* {
+    if not test -d $p { continue }
+    var b = $(basename $p)
+    if (b === 'current') { continue }
+    var m = b.search( / 
+              <capture d+ as major: int>
+          '.' <capture d+ as minor: int> 
+         ('.' <capture d+ as patch: int>)? / )
+    if (major >= m.group('major') and
+        minor >= m.group('minor') and
+        patch >= m.group('patch')) { continue }
+    setvar major = m.group('major')
+    setvar minor = m.group('minor')
+    setvar patch = m.group('patch')
+    setvar latest_path = p
+  }
+  if (latest_path === '') { Exit 'Not found any blender version to set current' (p=false) }
+  return (latest_path)
+}
+
+func apply_command(fn, list; many=false) {
+    var llen = len(list)
+    case (llen) {
+      (0) { Exit "Not found: $version" (p=false)}
+      (1) { call fn(list[0]) }
+      (else) {
+        case (many) {
+          (true)  { echo "Choose one or more:" }
+          (false) { echo "Choose one:" }
+        }
+        for i, p in (list) { echo "[$i] $(basename $p)" }
+        write -n "= ";
+        try { read -r to_remove }
+        for v in (to_remove.split(' ')) {
+          try { var i = int(v) }
+          if failed { echo "not exist: \"$v\""; continue }
+          if (i < 0 or i >= llen) { echo "not exist: \"$v\""; continue }
+          call fn(list[i])
+          if (not many) { break }
+        }
+      }
+    }
+}
+
+func cached_download(url) {
+  var tmp_path = "/tmp/blender-manager"
+  if not test -d $tmp_path {
+    mkdir -p $tmp_path
+  }
+  var out_path = "$tmp_path/$(basename $url)"
+  if test -f $out_path {
+    echo "Found in cache"
+    return (out_path)
+  }
+  var tmp_out_path = "$out_path.tmp"
+  try { curl -C - -L $url -o $tmp_out_path }
+  if failed {
+    try { rm $tmp_out_path }
+    return ('')
+  }
+  mv $tmp_out_path $out_path
+  return (out_path)
+}
+
+func remove_path(p) {
+  echo rm -rf $p
+  rm -rf $p
+}
+
+func remove_current() {
+  if (not cur_ver === '') {
+    var prev_latest_dir = $(readlink -f "$path/current")
+    echo removing current
+    call remove_path(prev_latest_dir)
+  }
+}
+
+func make_current_and_install(p) {
+  ln -srfn $p "$path/current"
+
+  if (not needs_install) { return (true) }
+  var src_desktop  = "$path/current/blender.desktop"
+  var desktop_dest = "$[ENV.HOME]/.local/share/applications/blender.desktop"
+  try { cp $src_desktop $desktop_dest }
+  if failed { echo "Failed to install"; return (false) }
+  sed -i "s|Exec=blender %f|Exec=$path/current/blender %f|" $desktop_dest
+}
+
+func get_repo_dirs(p) {
+  var repo_dirs = $(curl -s $p/ | 
+                    grep -oE 'Blender[0-9]+\.[0-9]+' | 
+                    sort -V)
+  if (not repo_dirs) {
+    Exit "Failed to fetch version list from Blender mirror" (p=false)
+  }
+  return (repo_dirs)
+}
+
+func get_repo_dir_files(p) {
+  var repo_dir_files = $(curl -s $p/ | 
+                      grep -oE 'blender-[0-9]+\.[0-9]+\.[0-9]+-linux-[a-zA-Z0-9_-]+\.tar\.(gz|bz2|xz)' | 
+                      sort -V)
+  if (not repo_dir_files) {
+    Exit "Failed to locate the latest blender archive (linux-x64)" (p=false)
+  }
+  return (repo_dir_files)
+}
+
+# MAIN
+if (len(ARGV) < 1) { Exit 'Provide a command' }
+parse-flags (ARGV)
+check_provided_version
+ensure_path
+get_current_version
+
+case (command) {
+  update {
+    var repo_latest_dir = $(echo $[get_repo_dirs(blender_repo)] | tail -n 1)
+    var repo_latest_file = $(echo $[get_repo_dir_files("$blender_repo/$repo_latest_dir")] | tail -n 1)
+
+    var latest_version = $(echo $repo_latest_file | sed -E 's/blender-([0-9]+\.[0-9]+\.[0-9]+)-linux.*/\1/')
+    var latest_folder = ${repo_latest_file%%.tar.*}
+    var final_dest = "$path/$latest_folder"
+
+    if test -d $final_dest {
+      Exit "Latest Blender $latest_version version is already installed" (p=false)
+    }
+
+    write -n "Found Blender $latest_version version, "
+    if (not cur_ver === '') { write -n "current $cur_ver version, " }
+    write -n "download?(Y/n) "
+    try { read -r answer }
+    if failed { Exit (p=false) }
+    case (answer) {
+      Y | y | '' { true }
+      * { Exit (p=false) }
+    }
+
+    echo "Downloading Blender $latest_version version..."
+    var archive_path = cached_download ("$blender_repo/$repo_latest_dir/$repo_latest_file")
+    if (archive_path === '') { Exit "Failed to download $repo_latest_file archive" (p=false) }
+
+    echo "Extracting downloaded archive"
+    try { mkdir -p $final_dest; tar -xf $archive_path -C $final_dest --strip-components=1 }
+    if failed { Exit "Failed to extract $repo_latest_file archive" (p=false) }
+
+    call remove_current()
+    call make_current_and_install(final_dest)
+
+    write -n   "Updated Blender "
+    if (not cur_ver === '') {
+      write -n "from $cur_ver "
+    }
+    echo       "to $latest_version version"
+  }
+  #get {
+    #echo "get $version"
+  #}
+  current {
+    if (version === 'latest') {
+      var latest_path = find_latest_in_path()
+      call make_current_and_install(latest_path)
+    } else {
+      var found = filter_path_by_version()
+      call apply_command (make_current_and_install, found)
+    }
+  }
+  rm {
+    var found = filter_path_by_version()
+    if (not cur_ver === '') {
+      var prev_latest_dir = $(readlink -f "$path/current")
+    }
+    call apply_command (remove_path, found, many=true)
+    for p in (found) {
+      if (p === prev_latest_dir) {
+        var latest_path = find_latest_in_path()
+        call make_current_and_install(latest_path)
+        break
+      }
+    }
+  }
+  purge {
+    write -n "Remove \"$path\"?(y/N) "
+    try { read -r answer }
+    if failed { Exit (p=false) }
+    case (answer) {
+      Y | y { true }
+      *     { Exit (p=false) }
+    }
+    echo rm -rf $path
+    rm -rf $path
+  }
+  list {
+    for p in $path/* {
+      if not test -d $p { continue }
+      var b = $(basename $p)
+      if (b === 'current') { continue }
+      echo $b
+    }
+  }
+  list_repo { echo $[get_repo_dirs()] }
+  help | -h | --help { Exit (e=0) }
+  (else) { Exit "Command: \"$command\" is not supported yet" (p=false) }
+}
+
