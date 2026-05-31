@@ -11,7 +11,7 @@ dependencies:
 sudo pacman -S oils-for-unix
 ```
 
-# Help:
+### Help
 ```
   Commands:
     update
@@ -24,7 +24,7 @@ sudo pacman -S oils-for-unix
         Set current to the specified version
     rm <version>
         Remove the specified version
-        if the current version is removed, set current to the latest version
+        if the current version is removed, set current to the latest downloaded version
     purge
         Remove <path> and all of its contents
     ls, list [repo]

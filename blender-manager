@@ -14,7 +14,7 @@ proc print-usage {
         Set current to the specified version
     rm <version>
         Remove the specified version
-        if the current version is removed, set current to the latest version
+        if the current version is removed, set current to the latest downloaded version
     purge
         Remove <path> and all of its contents
     ls, list [repo]
@@ -354,7 +354,7 @@ case (command) {
       echo $b
     }
   }
-  list_repo { echo $[get_repo_dirs()] }
+  list_repo { echo $[get_repo_dirs(blender_repo)] }
   help | -h | --help { Exit (e=0) }
   (else) { Exit "Command: \"$command\" is not supported yet" (p=false) }
 }
