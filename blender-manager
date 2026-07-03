@@ -48,7 +48,7 @@ proc Exit(str=''; ; p=true, e=1) {
 }
 
 func next(a, i, str) {
-  try { var v = a[i+1]  }
+  try { var v = a[i+1] }
   if failed { Exit $str }
   return (v)
 }
@@ -135,7 +135,7 @@ proc check_provided_version() {
 }
 
 proc get_current_version() {
-  if not test -d "$path/current" { return }
+  if ! test -d "$path/current" { return }
   var c = $(readlink "$path/current")
   setglobal cur_ver = $(echo $c | sed -E 's/blender-([0-9]+\.[0-9]+\.[0-9]+)-linux.*/\1/')
 }
@@ -155,7 +155,7 @@ func find_latest_in_path() {
   var minor = 0
   var patch = 0
   for p in $path/* {
-    if not test -d $p { continue }
+    if ! test -d $p { continue }
     var b = $(basename $p)
     if (b === 'current') { continue }
     var m = b.search( / 
@@ -200,7 +200,7 @@ func apply_command(fn, list; many=false) {
 
 func cached_download(url) {
   var tmp_path = "/tmp/blender-manager"
-  if not test -d $tmp_path {
+  if ! test -d $tmp_path {
     mkdir -p $tmp_path
   }
   var out_path = "$tmp_path/$(basename $url)"
@@ -224,7 +224,7 @@ func remove_path(p) {
 }
 
 func remove_current() {
-  if (not cur_ver === '') {
+  if cur_ver !== '' {
     var prev_latest_dir = $(readlink -f "$path/current")
     echo removing current
     call remove_path(prev_latest_dir)
@@ -243,22 +243,23 @@ func make_current_and_install(p) {
 }
 
 func get_repo_dirs(p) {
-  var repo_dirs = $(curl -s $p/ | 
+  try { var repo_dirs = $(curl -s $p/ | 
                     grep -oE 'Blender[0-9]+\.[0-9]+' | 
-                    sort -V)
-  if (not repo_dirs) {
+                    sort -V) }
+  if failed {
     Exit "Failed to fetch version list from Blender mirror" (p=false)
   }
   return (repo_dirs)
 }
 
 func get_repo_dir_files(p) {
-  var repo_dir_files = $(curl -s $p/ | 
+  try { var repo_dir_files = $(curl -s $p/ | 
                       grep -oE 'blender-[0-9]+\.[0-9]+\.[0-9]+-linux-[a-zA-Z0-9_-]+\.tar\.(gz|bz2|xz)' | 
-                      sort -V)
-  if (not repo_dir_files) {
+                      sort -V) }
+  if failed {
     Exit "Failed to locate the latest blender archive (linux-x64)" (p=false)
   }
+  echo $repo_dir_files
   return (repo_dir_files)
 }
 
@@ -283,7 +284,7 @@ case (command) {
     }
 
     write -n "Found Blender $latest_version version, "
-    if (not cur_ver === '') { write -n "current $cur_ver version, " }
+    if cur_ver !== '' { write -n "current $cur_ver version, " }
     write -n "download?(Y/n) "
     try { read -r answer }
     if failed { Exit (p=false) }
@@ -304,14 +305,23 @@ case (command) {
     call make_current_and_install(final_dest)
 
     write -n   "Updated Blender "
-    if (not cur_ver === '') {
+    if cur_ver !== '' {
       write -n "from $cur_ver "
     }
     echo       "to $latest_version version"
   }
-  #get {
-    #echo "get $version"
-  #}
+  get {
+    if (version === 'latest') {
+      Exit "TODO find a latest version to get" (p=false)
+    }
+    var dir_ver = $(echo $version | sed -E 's/([0-9]+\.[0-9]+).*/\1/')
+    var repo_dir = $(echo $[get_repo_dirs(blender_repo)] | grep $dir_ver | tail -n 1)
+    echo "Provided: $version | Dir: $repo_dir"
+    #echo "$[get_repo_dir_files("$blender_repo/$repo_dir")]"
+    var repo_file = $(echo $[get_repo_dir_files("$blender_repo/$repo_dir")] | tail -n 1)
+    echo "Found: $repo_file"
+    Exit (p=false)
+  }
   current {
     if (version === 'latest') {
       var latest_path = find_latest_in_path()
@@ -323,7 +333,7 @@ case (command) {
   }
   rm {
     var found = filter_path_by_version()
-    if (not cur_ver === '') {
+    if cur_ver !== '' {
       var prev_latest_dir = $(readlink -f "$path/current")
     }
     call apply_command (remove_path, found, many=true)
@@ -348,7 +358,7 @@ case (command) {
   }
   list {
     for p in $path/* {
-      if not test -d $p { continue }
+      if ! test -d $p { continue }
       var b = $(basename $p)
       if (b === 'current') { continue }
       echo $b
